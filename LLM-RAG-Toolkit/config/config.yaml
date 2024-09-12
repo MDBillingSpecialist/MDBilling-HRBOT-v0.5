@@ -1,0 +1,70 @@
+# File paths
+file_paths:
+  input_directory: 'data/raw'
+  output_folder: 'data/processed'
+  pdf_path: "data/raw/{filename}"
+  toc_json_path: "data/processed/{filename}_toc.json"
+  segmented_output_path: 'data/processed/{filename}_segmented.json'
+  metadata_output_path: 'data/processed/{filename}_metadata.json'
+
+# API configurations
+openai_api:
+  base_url: "https://api.openai.com/v1"
+
+# Model configurations
+models:
+  generation_model: "gpt-4o-mini-2024-07-18"
+  scoring_model: "nvidia/nemotron-4-340b-reward"
+
+# Generation parameters
+generation_parameters:
+  temperature: 0.2
+  top_p: 0.7
+  max_tokens: 4096
+  n_questions: 5
+
+# Validation parameters
+validation:
+  min_similarity_score: 0.7
+  min_fluency_score: 0.7
+
+# Augmentation settings
+augmentation:
+  enabled: true
+  techniques:
+    - synonym_replacement
+    - back_translation
+
+# Training settings
+training:
+  model_name: 'gpt-4o-mini-2024-07-18'
+  n_epochs: 4
+  price_per_token: 0.0001
+  train_ratio: 0.8
+  val_ratio: 0.2
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/processing_log.txt"
+
+# Debug mode
+debug: false
+
+# System message for chat completions
+system_message: "You are a highly knowledgeable assistant with expertise in the document's subject matter. Your task is to provide accurate answers strictly based on the information provided in the document. If you are unsure or the information is not available, clearly state that the document does not cover that particular topic. Avoid making guesses or assumptions."
+
+# Document processing
+document_processing:
+  max_segment_tokens: 500
+  min_content_length: 50  # Set this to 0 if you want to process all documents regardless of length
+
+# RAG system
+rag_system:
+  index_type: "faiss"
+  retrieval_top_k: 5
+
+# Web interface
+web_interface:
+  port: 8501
+  host: "0.0.0.0"
