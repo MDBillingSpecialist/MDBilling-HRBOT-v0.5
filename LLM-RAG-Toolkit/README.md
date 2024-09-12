@@ -15,8 +15,9 @@ LLM-RAG-Toolkit is a comprehensive solution for processing documents, building R
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/LLM-RAG-Toolkit.git
-   cd LLM-RAG-Toolkit
+      git clone https://github.com/MDBillingspecilist/LLM-RAG-Toolkit.git
+      cd LLM-RAG-Toolkit
+
    ```
 
 2. Install the required dependencies:
