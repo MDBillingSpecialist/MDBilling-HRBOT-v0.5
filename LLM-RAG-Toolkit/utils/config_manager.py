@@ -15,14 +15,19 @@ class Config:
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         self.DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
 
+        # Load additional configurations
+        self.max_segment_tokens = self.config.get("max_segment_tokens", 500)
+        self.overlap_sentences = self.config.get("overlap_sentences", 1)
+        self.file_paths = self.config.get("file_paths", [])
+
         # Ensure critical variables are set
         self._validate_config()
 
     def _validate_config(self):
-        critical_vars = ["OPENAI_API_KEY"]
+        critical_vars = ["OPENAI_API_KEY", "max_segment_tokens", "overlap_sentences", "file_paths"]
         for var in critical_vars:
             if not getattr(self, var):
-                raise ValueError(f"Critical environment variable {var} is not set.")
+                raise ValueError(f"Critical configuration {var} is not set.")
 
     def __getattr__(self, name):
         return self.config.get(name)
