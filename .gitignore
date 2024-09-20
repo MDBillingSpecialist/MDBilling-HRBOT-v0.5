@@ -1,0 +1,48 @@
+# Python-related
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Streamlit
+.streamlit/
+
+# IDE-related
+.vscode/
+.idea/
+
+# OS-related
+.DS_Store
+Thumbs.db
+
+# Project-specific
+knowledge_base/
+evaluation_reports/
+qa_dataset.json
+generated_dataset.json
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+
+# Large data files
+*.csv
+*.xlsx
+*.parquet
+
+# Environment variables
+.env
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# LlamaIndex specific
+chroma_db/
