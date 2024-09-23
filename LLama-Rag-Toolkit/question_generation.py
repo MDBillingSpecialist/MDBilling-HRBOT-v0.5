@@ -1,160 +1,173 @@
-import streamlit as st
-import pandas as pd
 import os
-import datetime
-import json
-from llama_index.core.node_parser import SimpleFileNodeParser, SemanticSplitterNodeParser, HierarchicalNodeParser
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms.openai import OpenAI
+import streamlit as st
+import logging
 from llama_index.core.llama_dataset import LabelledRagDataset
-from llama_index.core.evaluation import FaithfulnessEvaluator, RelevancyEvaluator
+from llama_index.core.llama_dataset.generator import RagDatasetGenerator
+from llama_index.llms.openai import OpenAI
+from typing import List, Dict, Any
+from api_logger import add_api_call
+import openai
+from functools import lru_cache
 
-def generate_synthetic_data(questions_per_chunk, parser_choice="Simple", model="gpt-4o-mini"):
-    try:
-        st.info(f"Generating synthetic data using {parser_choice} parser and {model} model...")
-        
-        # Choose the appropriate parser based on user selection
-        if parser_choice == "Simple":
-            node_parser = SimpleFileNodeParser.from_defaults()
-        elif parser_choice == "Semantic":
-            embed_model = OpenAIEmbedding()
-            node_parser = SemanticSplitterNodeParser(
-                buffer_size=1, 
-                breakpoint_percentile_threshold=95, 
-                embed_model=embed_model
-            )
-        elif parser_choice == "Hierarchical":
-            node_parser = HierarchicalNodeParser.from_defaults(
-                chunk_sizes=[2048, 512, 128]
-            )
-        else:
-            raise ValueError(f"Unknown parser choice: {parser_choice}")
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-        all_nodes = []
-        for doc_id, doc_list in st.session_state['parsed_documents'].items():
-            st.text(f"Processing document: {doc_id}")
-            nodes = node_parser.get_nodes_from_documents(doc_list)
-            all_nodes.extend(nodes)
+# Enable OpenAI library logging
+openai.log = "debug"
 
-        st.text(f"Total nodes generated: {len(all_nodes)}")
+# Initialize the OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        llm = OpenAI(model=model)
+def generate_synthetic_data(questions_per_node: int, model: str, progress_callback=None):
+    """Generates synthetic questions and answers based on the knowledge base."""
+    logger.info("Starting synthetic data generation")
+    st.write("Starting synthetic data generation...")
 
-        st.text("Generating dataset...")
-        from llama_index.core.llama_dataset.generator import RagDatasetGenerator
-        dataset_generator = RagDatasetGenerator(
-            nodes=all_nodes,
-            num_questions_per_chunk=questions_per_chunk,
-            llm=llm
-        )
+    if 'knowledge_base' not in st.session_state or st.session_state['knowledge_base'] is None:
+        logger.error("Knowledge base not found")
+        st.error("Knowledge base not found. Please create a knowledge base first.")
+        return 0, None
 
-        new_dataset = dataset_generator.generate_dataset_from_nodes()
-        
-        if 'dataset' not in st.session_state:
-            st.session_state['dataset'] = LabelledRagDataset(examples=[])
-        
-        st.session_state['dataset'].examples.extend(new_dataset.examples)
-        return len(new_dataset.examples)
-        
-    except Exception as e:
-        st.error(f"Error generating synthetic data: {str(e)}")
-        return 0
+    # Initialize the OpenAI LLM
+    llm = OpenAI(model=model)
+    logger.info(f"Initialized OpenAI LLM with model: {model}")
+    st.write(f"Using OpenAI model: {model}")
 
-def save_dataset(dataset: LabelledRagDataset, filename="generated_dataset.json"):
-    dataset.save_json(filename)
+    # Get nodes from the knowledge base and convert to list
+    nodes = list(st.session_state['knowledge_base'].docstore.docs.values())
+    logger.info(f"Retrieved {len(nodes)} nodes from the knowledge base")
+    st.write(f"Retrieved {len(nodes)} nodes from the knowledge base")
 
-def load_dataset(filename="generated_dataset.json") -> LabelledRagDataset:
-    try:
-        return LabelledRagDataset.from_json(filename)
-    except FileNotFoundError:
-        return LabelledRagDataset(examples=[])
+    # Create the dataset generator
+    dataset_generator = RagDatasetGenerator(
+        nodes=nodes,
+        llm=llm,
+        num_questions_per_chunk=questions_per_node
+    )
+    logger.info(f"Created RagDatasetGenerator with {questions_per_node} questions per node")
+    st.write(f"Created RagDatasetGenerator with {questions_per_node} questions per node")
 
-def evaluate_responses(query_engine, dataset, num_questions, faithfulness_threshold):
-    llm = OpenAI(temperature=0, model="gpt-4o-mini")
-    relevancy_evaluator = RelevancyEvaluator(llm=llm)
-    faithfulness_evaluator = FaithfulnessEvaluator(llm=llm)
+    # Generate the dataset
+    logger.info("Generating dataset from nodes")
+    st.write("Generating dataset from nodes...")
+    rag_dataset = dataset_generator.generate_dataset_from_nodes()
+    logger.info(f"Generated dataset with {len(rag_dataset.examples)} examples")
+    st.write(f"Generated dataset with {len(rag_dataset.examples)} examples")
 
-    correct_relevancy = 0
-    faithful_responses = 0
-    all_evaluations = []
-
-    for example in dataset.examples[:num_questions]:
-        question = example.query
-        expected_response = example.reference_answer
-
-        response = query_engine.query(question)
-        response_text = str(response)
-        
-        contexts = [node.node.get_content() for node in response.source_nodes] if response.source_nodes else [""]
-
-        relevancy_result = relevancy_evaluator.evaluate(
-            query=question,
-            response=response_text,
-            contexts=contexts
-        )
-        faithfulness_result = faithfulness_evaluator.evaluate(
-            query=question,
-            response=response_text,
-            contexts=contexts
-        )
-        is_hallucination = faithfulness_result.score is None or faithfulness_result.score < faithfulness_threshold
-
-        eval_record = {
-            "Query": question,
-            "Generated Response": response_text,
-            "Expected Response": expected_response,
-            "Relevancy Score": relevancy_result.score,
-            "Faithfulness Score": faithfulness_result.score,
-            "Is Hallucination": is_hallucination
-        }
-        all_evaluations.append(eval_record)
-
-        if relevancy_result.score and relevancy_result.score > 0.5:
-            correct_relevancy += 1
-        if not is_hallucination:
-            faithful_responses += 1
-
-    return all_evaluations, correct_relevancy, faithful_responses, num_questions
-
-def save_evaluation_results(all_evaluations, correct_relevancy, faithful_responses, total_questions, faithfulness_threshold, experiment_name):
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    reports_dir = f"evaluation_reports/{experiment_name}_{timestamp}"
-    os.makedirs(reports_dir, exist_ok=True)
-
-    relevancy_accuracy = (correct_relevancy / total_questions) * 100
-    faithfulness_accuracy = (faithful_responses / total_questions) * 100
-    hallucination_rate = 100 - faithfulness_accuracy
-
-    summary_data = {
-        "Total Evaluations": [total_questions],
-        "Relevancy Accuracy (%)": [relevancy_accuracy],
-        "Faithfulness Accuracy (%)": [faithfulness_accuracy],
-        "Hallucination Rate (%)": [hallucination_rate],
-        "Faithfulness Threshold": [faithfulness_threshold],
-    }
-    summary_df = pd.DataFrame(summary_data)
-
-    # Save summary to HTML
-    summary_filename = os.path.join(reports_dir, "evaluation_summary.html")
-    summary_df.to_html(summary_filename, index=False)
-
-    # Save all evaluations to HTML
-    evaluations_filename = os.path.join(reports_dir, "all_evaluations.html")
-    all_evaluations_df = pd.DataFrame(all_evaluations)
-    all_evaluations_df.to_html(evaluations_filename, index=False)
-
-    return summary_df, all_evaluations_df, reports_dir
-
-def export_qa_dataset(dataset: LabelledRagDataset, filename="qa_dataset.json"):
-    qa_pairs = []
-    for example in dataset.examples:
-        qa_pairs.append({
+    # Convert the dataset to a list of dictionaries and check relevance
+    dataset = []
+    total_examples = len(rag_dataset.examples)
+    for i, example in enumerate(rag_dataset.examples):
+        qa_pair = {
             "question": example.query,
             "answer": example.reference_answer,
-            "contexts": example.reference_contexts
+            "context": example.reference_contexts[0] if example.reference_contexts else ""
+        }
+        logger.info(f"Checking relevance for Q&A pair {i+1}")
+        st.write(f"Checking relevance for Q&A pair {i+1}...")
+        if check_relevance(qa_pair, llm):
+            dataset.append(qa_pair)
+            logger.info(f"Q&A pair {i+1} is relevant")
+            st.write(f"Q&A pair {i+1} is relevant")
+        else:
+            logger.info(f"Q&A pair {i+1} is not relevant")
+            st.write(f"Q&A pair {i+1} is not relevant")
+        if progress_callback:
+            progress = min(100, (i + 1) / total_examples * 100)
+            progress_callback(progress)
+
+    update_session_state('synthetic_qa_pairs', dataset)
+    update_session_state('rag_dataset', rag_dataset)
+    
+    logger.info(f"Finished generating {len(dataset)} relevant Q&A pairs")
+    st.write(f"Finished generating {len(dataset)} relevant Q&A pairs")
+    return len(dataset), dataset
+
+def check_relevance(qa_pair: Dict[str, str], llm: OpenAI) -> bool:
+    """Check if the generated Q&A pair is relevant to the context."""
+    prompt = f"""
+    Given the following context, question, and answer, determine if the Q&A pair is relevant and appropriate.
+    
+    Context: {qa_pair['context']}
+    
+    Question: {qa_pair['question']}
+    
+    Answer: {qa_pair['answer']}
+    
+    Is this Q&A pair relevant to the context and appropriate? Answer with 'Yes' or 'No' and provide a brief explanation.
+    """
+    
+    try:
+        response = llm.complete(prompt)
+        
+        # Log the full prompt and response
+        logger.info(f"Relevance Check Prompt:\n{prompt}")
+        logger.info(f"Relevance Check Response:\n{response}")
+        
+        add_api_call("Relevance Check", f"Prompt: {prompt}\nResponse: {response}")
+        
+        # Check if the response text starts with 'yes'
+        is_relevant = response.text.lower().startswith('yes')
+        logger.info(f"Relevance check result: {'Relevant' if is_relevant else 'Not relevant'}")
+        return is_relevant
+    except Exception as e:
+        logger.error(f"Error in check_relevance: {str(e)}")
+        return False
+
+def update_session_state(key, value):
+    """Updates the Streamlit session state."""
+    if isinstance(key, list):
+        key = tuple(tuple(item.items()) for item in key)
+    st.session_state[key] = value
+
+def log_dataset_structure(dataset: List[Dict[str, str]]):
+    """Logs the structure of the generated dataset."""
+    st.subheader("Generated Dataset Structure")
+    st.text(f"Number of QA pairs: {len(dataset)}")
+    if dataset:
+        st.text("Example QA pair:")
+        st.json(dataset[0])
+
+def save_rag_dataset(rag_dataset: LabelledRagDataset, filename: str = "rag_dataset.json"):
+    """Saves the RAG dataset to a JSON file."""
+    rag_dataset.save_json(filename)
+    st.success(f"RAG dataset saved to {filename}")
+
+def load_rag_dataset(filename: str = "rag_dataset.json") -> LabelledRagDataset:
+    """Loads a RAG dataset from a JSON file."""
+    return LabelledRagDataset.from_json(filename)
+
+def format_for_fine_tuning(dataset: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Formats the dataset for fine-tuning."""
+    formatted_data = []
+    for item in dataset:
+        formatted_data.append({
+            "prompt": f"Question: {item['question']}\nContext: {item['context']}\nAnswer:",
+            "completion": f" {item['answer']}"
         })
+    return formatted_data
+
+def save_for_fine_tuning(dataset: List[Dict[str, str]], filename: str = "fine_tuning_data.jsonl"):
+    """Saves the formatted dataset for fine-tuning."""
+    import json
+    formatted_data = format_for_fine_tuning(dataset)
+    with open(filename, 'w') as f:
+        for item in formatted_data:
+            json.dump(item, f)
+            f.write('\n')
+    st.success(f"Fine-tuning dataset saved to {filename}")
+
+@lru_cache(maxsize=None)
+def cached_generate_synthetic_data(questions_per_node: int, model: str):
+    """Cached version of generate_synthetic_data."""
+    return generate_synthetic_data(questions_per_node, model)
+
+def generate_questions():
+    # ... (previous code)
     
-    with open(filename, "w") as f:
-        json.dump(qa_pairs, f, indent=2)
-    
-    return filename
+    if st.button("Generate Synthetic Data"):
+        # Use the cached version
+        num_qa_pairs, dataset = cached_generate_synthetic_data(questions_per_node, model)
+        
+        # ... (rest of the function)

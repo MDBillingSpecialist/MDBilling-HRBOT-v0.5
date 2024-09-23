@@ -1,130 +1,231 @@
 import streamlit as st
-import pandas as pd
-import chromadb
-from document_processing import upload_document, parse_document
-from knowledge_base import create_knowledge_base, export_knowledge_base
-from question_generation import generate_synthetic_data, load_dataset, evaluate_responses, save_evaluation_results, export_qa_dataset
+from document_processing import process_documents, display_parsed_documents, display_parser_config
+from knowledge_base import create_knowledge_base, export_knowledge_base, load_knowledge_base, create_rag_query_engine, query_knowledge_base, save_knowledge_base_state, load_knowledge_base_state
+from question_generation import generate_synthetic_data, log_dataset_structure, save_rag_dataset, load_rag_dataset, save_for_fine_tuning
+from api_logger import add_api_call
+import logging
+import io
+import uuid
 
-# Add the functions: initialize_session_state, handle_upload_documents, 
-# handle_parse_documents, handle_create_knowledge_base, 
-# and handle_generate_questions_and_evaluate here
-# (The content of these functions should be similar to what was in the original app2.py)
+def initialize_session():
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    if 'step' not in st.session_state:
+        st.session_state.step = 'upload_documents'
 
-def initialize_session_state():
-    if 'documents' not in st.session_state:
-        st.session_state['documents'] = {}
-    if 'parsed_documents' not in st.session_state:
-        st.session_state['parsed_documents'] = {}
-    if 'knowledge_base' not in st.session_state:
-        st.session_state['knowledge_base'] = None
-    if 'dataset' not in st.session_state:
-        st.session_state['dataset'] = load_dataset()
-    if 'metrics' not in st.session_state:
-        st.session_state['metrics'] = {'uploaded_docs': 0, 'parsed_docs': 0, 'total_chunks': 0, 'kb_size': 0, 'total_nodes': 0}
-    if 'chroma_client' not in st.session_state:
-        st.session_state['chroma_client'] = chromadb.Client()
-    if 'chroma_collection' not in st.session_state:
-        collection_name = "my_collection"
-        st.session_state['chroma_collection'] = st.session_state['chroma_client'].get_or_create_collection(collection_name)
-
-def handle_upload_documents():
-    st.header("Step 1: Upload Documents")
-    uploaded_files = st.file_uploader("Upload Documents", type=['pdf', 'txt', 'docx'], accept_multiple_files=True)
-
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            if upload_document(uploaded_file):
-                st.success(f"Uploaded {uploaded_file.name}")
-            else:
-                st.warning(f"Document '{uploaded_file.name}' is already uploaded.")
+def render_ui():
+    initialize_session()
     
-    display_uploaded_documents()
+    if st.session_state.step == 'upload_documents':
+        render_upload_documents()
+    elif st.session_state.step == 'create_knowledge_base':
+        render_create_knowledge_base()
+    elif st.session_state.step == 'generate_questions':
+        render_generate_questions()
+    elif st.session_state.step == 'query_rag':
+        render_query_rag()
 
-def display_uploaded_documents():
-    if st.session_state['documents']:
-        st.subheader("Uploaded Documents")
-        doc_df = pd.DataFrame([{'Name': doc_info['name'], 'Size': doc_info['size'], 'Upload Time': doc_info['upload_time']} for doc_info in st.session_state['documents'].values()])
-        st.dataframe(doc_df)
+def render_upload_documents():
+    # ... (code for uploading documents)
+    if documents_uploaded:
+        st.session_state.step = 'create_knowledge_base'
+        st.experimental_rerun()
 
-def handle_parse_documents():
-    st.header("Step 2: Parse Documents")
-    if not st.session_state['documents']:
-        st.error("Please upload documents first.")
+def render_create_knowledge_base():
+    # ... (code for creating knowledge base)
+    if knowledge_base_created:
+        st.session_state.step = 'generate_questions'
+        st.experimental_rerun()
+
+def render_generate_questions():
+    # ... (code for generating questions)
+    if questions_generated:
+        st.session_state.step = 'query_rag'
+        st.experimental_rerun()
+
+def render_query_rag():
+    # ... (code for querying RAG)
+    st.header("3. Query Knowledge Base using RAG")
+    model = st.selectbox("Select Model for RAG", [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "o1-mini",
+        "o1-preview"
+    ])
+    
+    if 'rag_query_engine' not in st.session_state:
+        st.session_state['rag_query_engine'] = create_rag_query_engine(st.session_state['knowledge_base'], model)
+    
+    query = st.text_input("Enter your query:")
+    
+    if st.button("Submit Query"):
+        if query:
+            with st.spinner("Generating response..."):
+                response = query_knowledge_base(st.session_state['rag_query_engine'], query)
+                st.subheader("RAG Response:")
+                st.write(response)
+                st.subheader("Source Nodes:")
+                for node in response.source_nodes:
+                    st.write(f"- {node.node.get_content()[:200]}...")
+        else:
+            st.warning("Please enter a query.")
+
+def render_sidebar():
+    st.sidebar.title("LLama RAG Toolkit")
+    
+    # Add save and load options
+    if st.sidebar.button("Save Current State"):
+        save_knowledge_base_state()
+    
+    if st.sidebar.button("Load Saved State"):
+        if load_knowledge_base_state():
+            st.experimental_rerun()
+    
+    # Step 1: Choose action
+    st.sidebar.header("1. Choose Action")
+    action = st.sidebar.radio("Select an action", ["Create New Knowledge Base", "Load Existing Knowledge Base"])
+
+    if action == "Create New Knowledge Base":
+        create_new_knowledge_base()
     else:
-        if st.button("Parse All Documents"):
-            for doc_id, doc_info in st.session_state['documents'].items():
-                if doc_id not in st.session_state['parsed_documents']:
-                    if parse_document(doc_id, doc_info):
-                        st.success(f"Parsed {doc_info['name']}")
-        
-        if st.session_state['parsed_documents']:
-            st.subheader("Parsing Metrics")
-            st.write(f"Parsed Documents: {st.session_state['metrics']['parsed_docs']}")
-            st.write(f"Total Chunks: {st.session_state['metrics']['total_chunks']}")
+        load_existing_knowledge_base()
 
-def handle_create_knowledge_base():
-    st.header("Step 3: Create Knowledge Base")
-    if not st.session_state['parsed_documents']:
-        st.error("Please parse documents first.")
-    else:
+    # Step 2: Generate Questions (only if knowledge base exists)
+    if 'knowledge_base' in st.session_state and st.session_state['knowledge_base'] is not None:
+        generate_questions()
+
+    # Step 3: Query Knowledge Base (only if knowledge base exists)
+    if 'knowledge_base' in st.session_state and st.session_state['knowledge_base'] is not None:
+        query_rag()
+
+def create_new_knowledge_base():
+    st.header("Create New Knowledge Base")
+    
+    # Step 1: Upload and Process Documents
+    st.subheader("1.1 Upload and Process Documents")
+    uploaded_files = st.file_uploader("Upload Documents", type=['pdf', 'txt', 'docx'], accept_multiple_files=True)
+    
+    buffer_size, num_children = display_parser_config()
+    
+    if uploaded_files and st.button("Process and Parse Documents"):
+        processed_docs = process_documents(uploaded_files, buffer_size, num_children)
+        if processed_docs:
+            st.session_state['parsed_documents'] = processed_docs
+            st.success(f"Documents processed and parsed.")
+            display_parsed_documents()
+
+    # Step 2: Create Knowledge Base
+    if 'parsed_documents' in st.session_state and st.session_state['parsed_documents']:
+        st.subheader("1.2 Create Knowledge Base")
         if st.button("Create Knowledge Base"):
             if create_knowledge_base():
-                st.success("Knowledge base created successfully!")
+                st.success("Knowledge base created successfully.")
                 export_path = export_knowledge_base()
-                st.success(f"Knowledge base exported to: {export_path}")
-        
-        if st.session_state['knowledge_base']:
-            st.subheader("Knowledge Base Metrics")
-            st.write(f"Knowledge Base Size: {st.session_state['metrics']['kb_size']}")
+                st.success(f"Knowledge base created and exported to: {export_path}")
 
-def handle_generate_questions_and_evaluate():
-    st.header("Step 4: Generate Questions and Evaluate")
-    
-    if not st.session_state.get('parsed_documents'):
-        st.error("Please parse documents first before generating synthetic data.")
-        return
-    
-    parser_choice = st.selectbox("Choose a parsing method", ["Simple", "Semantic", "Hierarchical"])
-    questions_per_chunk = st.number_input("Number of questions per chunk", min_value=1, value=5)
-    
-    model_options = [
-        "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4-turbo"
-    ]
-    selected_model = st.selectbox("Choose AI Model", model_options)
+def load_existing_knowledge_base():
+    st.header("Load Existing Knowledge Base")
+    kb_path = st.text_input("Enter path to knowledge base")
+    if st.button("Load Knowledge Base"):
+        if kb_path:
+            loaded_index = load_knowledge_base(kb_path)
+            if loaded_index:
+                st.session_state['knowledge_base'] = loaded_index
+                st.success(f"Knowledge base loaded from: {kb_path}")
+        else:
+            st.error("Please enter a path to the knowledge base.")
+
+def generate_questions():
+    st.header("2. Generate Synthetic Questions and Answers")
+    model = st.selectbox("Select Model", [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "o1-mini",
+        "o1-preview"
+    ])
+    questions_per_node = st.number_input("Questions per node", min_value=1, value=5)
     
     if st.button("Generate Synthetic Data"):
-        new_questions = generate_synthetic_data(questions_per_chunk, parser_choice, selected_model)
-        st.success(f"Generated {new_questions} new questions using {selected_model}.")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        log_output = st.empty()
+        api_calls_container = st.empty()
         
-        if new_questions > 0:
-            # Export the QA dataset
-            qa_export_path = export_qa_dataset(st.session_state['dataset'])
-            st.success(f"QA dataset exported to: {qa_export_path}")
+        def update_progress(progress):
+            progress = min(100, max(0, progress))  # Ensure progress is between 0 and 100
+            progress_bar.progress(progress / 100)  # Convert to [0, 1] range for Streamlit
+            status_text.text(f"Generating and checking relevance of Q&A pairs... {progress:.2f}% complete")
+        
+        # Capture log output
+        with st.spinner("Generating synthetic data..."):
+            log_capture_string = io.StringIO()
+            ch = logging.StreamHandler(log_capture_string)
+            ch.setLevel(logging.DEBUG)  # Set to DEBUG to capture all logs
+            logger = logging.getLogger()  # Capture root logger to get OpenAI logs
+            logger.addHandler(ch)
+            
+            num_qa_pairs, dataset = generate_synthetic_data(questions_per_node, model, update_progress)
+            
+            logger.removeHandler(ch)
+            log_contents = log_capture_string.getvalue()
+            log_output.text_area("Log Output:", log_contents, height=500)
+        
+        progress_bar.progress(100)
+        status_text.text("Question and answer generation complete!")
+        
+        st.success(f"Generated {num_qa_pairs} relevant question-answer pairs.")
+        log_dataset_structure(dataset)
+        
+        # Save RAG dataset
+        if st.button("Save RAG Dataset"):
+            save_rag_dataset(st.session_state['rag_dataset'])
+        
+        # Save for fine-tuning
+        if st.button("Save Dataset for Fine-tuning"):
+            save_for_fine_tuning(dataset)
+        
+        # Display API calls
+        api_calls_container.text_area("API Calls:", value=get_api_calls_text(), height=500)
+
+def get_api_calls_text():
+    if 'api_calls' not in st.session_state:
+        return "No API calls logged yet."
+    return "\n\n".join([f"Request: {call['request']}\nResponse: {call['response']}" for call in st.session_state.api_calls[-10:]])  # Show only the last 10 calls
+
+def render_api_calls():
+    st.header("API Calls and Responses")
+    st.text_area("API Calls:", value=get_api_calls_text(), height=300, key="api_calls_display")
+
+def render_main_content():
+    st.title("LLama RAG Toolkit")
+    render_sidebar()
+    render_api_calls()
+
+def render_ui():
+    render_main_content()
+
+def query_rag():
+    st.header("3. Query Knowledge Base using RAG")
+    model = st.selectbox("Select Model for RAG", [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "o1-mini",
+        "o1-preview"
+    ])
     
-    if 'dataset' in st.session_state and st.session_state['dataset'].examples:
-        st.write(f"Available questions: {len(st.session_state['dataset'].examples)}")
-
-        max_questions = len(st.session_state['dataset'].examples)
-        num_questions = st.slider("Number of questions to evaluate", min_value=1, max_value=min(max_questions, 10), value=5)
-        faithfulness_threshold = st.slider("Faithfulness Threshold", min_value=0.0, max_value=1.0, value=0.5)
-        experiment_name = st.text_input("Experiment Name", value="default_experiment")
-
-        if st.button("Evaluate Responses"):
-            with st.spinner("Evaluating responses..."):
-                query_engine = st.session_state['knowledge_base'].as_query_engine()
-                all_evaluations, correct_relevancy, faithful_responses, total_questions = evaluate_responses(
-                    query_engine, st.session_state['dataset'], num_questions, faithfulness_threshold
-                )
-
-                summary_df, all_evaluations_df, reports_dir = save_evaluation_results(
-                    all_evaluations, correct_relevancy, faithful_responses, total_questions, 
-                    faithfulness_threshold, experiment_name
-                )
-
-                st.subheader("Evaluation Results")
-                st.dataframe(all_evaluations_df)
-                st.subheader("Summary")
-                st.dataframe(summary_df)
-                st.success(f"Detailed reports saved in: {reports_dir}")
-    else:
-        st.warning("No questions available. Please generate synthetic data first.")
+    if 'rag_query_engine' not in st.session_state:
+        st.session_state['rag_query_engine'] = create_rag_query_engine(st.session_state['knowledge_base'], model)
+    
+    query = st.text_input("Enter your query:")
+    
+    if st.button("Submit Query"):
+        if query:
+            with st.spinner("Generating response..."):
+                response = query_knowledge_base(st.session_state['rag_query_engine'], query)
+                st.subheader("RAG Response:")
+                st.write(response)
+                st.subheader("Source Nodes:")
+                for node in response.source_nodes:
+                    st.write(f"- {node.node.get_content()[:200]}...")
+        else:
+            st.warning("Please enter a query.")
