@@ -93,3 +93,10 @@ def test_process_documents_file_handling(mock_unlink, mock_named_temp_file, mock
     
     mock_named_temp_file.assert_called()
     mock_unlink.assert_called_with('/tmp/test_file.txt')
+
+import unittest
+from src.document_processing.processor import process_documents
+
+class TestDocumentProcessing(unittest.TestCase):
+    def test_process_documents(self):
+        # ... (test cases)
